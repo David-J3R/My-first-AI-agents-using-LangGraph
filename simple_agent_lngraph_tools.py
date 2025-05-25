@@ -2,7 +2,6 @@ import os
 from typing import Annotated, TypedDict
 from dotenv import load_dotenv
 
-from openai import OpenAI
 from langchain_openai import ChatOpenAI
 
 from langgraph.graph import StateGraph, END
@@ -15,115 +14,164 @@ load_dotenv()
 openai_key = os.getenv("OPENAI_API_KEY")
 tavily = os.getenv("TAVILY_API_KEY")
 
+llm = "gpt-4.1-nano-2025-04-14"
 
-llm_name = "gpt-3.5-turbo"
+model = ChatOpenAI(api_key=openai_key, model=llm)
 
-client = OpenAI(api_key=openai_key)
-model = ChatOpenAI(api_key=openai_key, model=llm_name)
-
-
+# ----- Set up a AI agent with tools -----
 # STEP 1: Build a Basic Chatbot
 from langgraph.graph.message import add_messages
+# add_messages specifies how this should be updated when the state changes
 
-
+# Define the state of the agent
 class State(TypedDict):
     # Messages have the type "list". The `add_messages` function
     # in the annotation defines how this state key should be updated
     # (in this case, it appends messages to the list, rather than overwriting them)
-    messages: Annotated[list, add_messages]
+    messages: Annotated[list, add_messages] # Annotated allows to add metadata
 
-
+# Create a graph builder
 graph_builder = StateGraph(State)
 
-# create tools
-tool = TavilySearchResults(max_results=2)
-tools = [tool]
-# rest = tool.invoke("What is the capital of France?")
-# print(rest)
+# STEP 2: Create tools
+searchtool = TavilySearchResults(max=2)
+tools = [searchtool] # List of tools to be used by the agent, list type so it can be extended later
+# res = tool.invoke("What is the capital of France?")
+# print(res)
 
 model_with_tools = model.bind_tools(tools)
+# res = model_with_tools.invoke("What's a 'node' in LangGraph?")
+# print(res)
 
-# Below, implement a BasicToolNode that checks the most recent
-# message in the state and calls tools if the message contains tool_calls
+#STEP 2.1: implement a BasicToolNode that checks the most recent message
+# in the state and calls tools if the message contains tool_calls
+# !Note: You can replace this with the prebuilt tools_condition to be more concise
+# Code from: https://langchain-ai.github.io/langgraph/tutorials/get-started/2-add-tools/?h=basictoolnode#5-create-a-function-to-run-the-tools
 import json
 from langchain_core.messages import ToolMessage
-from langgraph.prebuilt import ToolNode, tools_condition
+
+class BasicToolNode:
+    """A node that runs the tools requested in the last AIMessage."""
+
+    def __init__(self, tools: list) -> None:
+        self.tools_by_name = {tool.name: tool for tool in tools}
+
+    def __call__(self, inputs: dict):
+        if messages := inputs.get("messages", []):
+            message = messages[-1]
+        else:
+            raise ValueError("No message found in input")
+        outputs = []
+        for tool_call in message.tool_calls:
+            tool_result = self.tools_by_name[tool_call["name"]].invoke(
+                tool_call["args"]
+            )
+            outputs.append(
+                ToolMessage(
+                    content=json.dumps(tool_result),
+                    name=tool_call["name"],
+                    tool_call_id=tool_call["id"],
+                )
+            )
+        return {"messages": outputs}
+
+# Instantiate the BasicToolNode with the tools
+tool_node = BasicToolNode(tools=[searchtool])
+graph_builder.add_node("tools", tool_node)
+
+def route_tools(
+    state: State,
+):
+    """
+    Use in the conditional_edge to route to the ToolNode if the last message
+    has tool calls. Otherwise, route to the end.
+    """
+    if isinstance(state, list):
+        ai_message = state[-1]
+    elif messages := state.get("messages", []):
+        ai_message = messages[-1]
+    else:
+        raise ValueError(f"No messages found in input state to tool_edge: {state}")
+    if hasattr(ai_message, "tool_calls") and len(ai_message.tool_calls) > 0:
+        return "tools"
+    return END
 
 
-def bot(state: State):
-    # print(state.items())
-    print(state["messages"])
-    return {"messages": [model_with_tools.invoke(state["messages"])]}
-
-
-# instantiate the ToolNode with the tools
-tool_node = ToolNode(tools=[tool])
-graph_builder.add_node("tools", tool_node)  # Add the node to the graph
-
-
-# The `tools_condition` function returns "tools" if the chatbot asks to use a tool, and "__end__" if
+# The `tools_condition` function returns "tools" if the chatbot asks to use a tool, and "END" if
 # it is fine directly responding. This conditional routing defines the main agent loop.
 graph_builder.add_conditional_edges(
     "bot",
-    tools_condition,
+    route_tools,
+    # The following dictionary lets you tell the graph to interpret the condition's outputs as a specific node
+    # It defaults to the identity function, but if you
+    # want to use a node named something else apart from "tools",
+    # You can update the value of the dictionary to something else
+    # e.g., "tools": "my_tools"
+    {"tools": "tools", END: END},
 )
+
+
+
+# STEP 3: build the first node for the graph
+def bot(state: State):
+    # The bot function is the first node in the graph. It takes the state as input
+    # and returns a response based on the messages in the state.
+    print(state["messages"])
+    return {"messages": [model_with_tools.invoke(state["messages"])]}
 
 # The first argument is the unique node name
 # The second argument is the function or object that will be called whenever
 # the node is used.
 graph_builder.add_node("bot", bot)
 
+# Step 4: add an entry point and end to the graph
+graph_builder.set_entry_point("bot")  # it could be any node
 
-# STEP 3: Add an entry point to the graph
-graph_builder.set_entry_point("bot")
+# Step 5: Compile the graph
+graph = graph_builder.compile()
 
-# ADD MEMORY NODE
-from langgraph.checkpoint.sqlite import SqliteSaver
+# res = graph.invoke({"messages": ["Hello, how are you?"]})
+# print(res)
 
-memory = SqliteSaver.from_conn_string(":memory:")
+# EXTRA: Print the graph structure
+from IPython.display import Image, display
 
-# STEP 5: Compile the graph
-graph = graph_builder.compile(checkpointer=memory)
-# MEMORY CODE CONTINUES ===
-# Now we can run the chatbot and see how it behaves
-# PICK A TRHEAD FIRST
-config = {
-    "configurable": {"thread_id": 1}
-}  # a thread where the agent will dump its memory to
-user_input = "Hi there! My name is Bond. and I have been happy for 100 years"
+try:
+    # Get the current working directory
+    current_dir = os.getcwd()
+    file_path = os.path.join(current_dir, "simple_agent_lngraph_tools.png")
 
-# The config is the **second positional argument** to stream() or invoke()!
-events = graph.stream(
-    {"messages": [("user", user_input)]}, config, stream_mode="values"
-)
+    # Save the graph to a file
+    png_data = graph.get_graph().draw_mermaid_png()
 
-for event in events:
-    event["messages"][-1].pretty_print()
+    with open("simple_agent_lngraph_tools.png", "wb") as f:
+        f.write(png_data)
 
-
-user_input = "do you remember my name, and how long have I been happy for?"
-
-# The config is the **second positional argument** to stream() or invoke()!
-events = graph.stream(
-    {"messages": [("user", user_input)]}, config, stream_mode="values"
-)
-
-for event in events:
-    event["messages"][-1].pretty_print()
+    print("Graph saved as simple_agent_lngraph_tools.png")
+except Exception as e:
+    # This requires some extra dependencies and is optional
+    print("Error saving graph:", e)
 
 
-snapshot = graph.get_state(config)
-print(snapshot)
+# Step 6: Stream the graph
+def stream_graph_updates(user_input: str):
+    for event in graph.stream({"messages": [{"role": "user", "content": user_input}]}):
+        for value in event.values():
+            print("Assistant:", value["messages"][-1].content)
+
+while True:
+    try:
+        user_input = input("User: ")
+        if user_input.lower() in ["quit", "exit", "q"]:
+            print("Goodbye!")
+            break
+
+        stream_graph_updates(user_input)
+    except:
+        # fallback if input() is not available
+        user_input = "What do you know about LangGraph?"
+        print("User: " + user_input)
+        stream_graph_updates(user_input)
+        break
 
 
-# from langchain_core.messages import BaseMessage
-
-# while True:
-#     user_input = input("User: ")
-#     if user_input.lower() in ["quit", "exit", "q"]:
-#         print("Goodbye!")
-#         break
-#     for event in graph.stream({"messages": [("user", user_input)]}):
-#         for value in event.values():
-#             if isinstance(value["messages"][-1], BaseMessage):
-#                 print("Assistant:", value["messages"][-1].content)

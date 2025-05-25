@@ -2,40 +2,36 @@ import os
 from typing import Annotated, TypedDict
 from dotenv import load_dotenv
 
-from openai import OpenAI
 from langchain_openai import ChatOpenAI
 
 from langgraph.graph import StateGraph, END
 
-
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv
 
 openai_key = os.getenv("OPENAI_API_KEY")
 
+llm = "gpt-4.1-nano-2025-04-14"
 
-llm_name = "gpt-3.5-turbo"
-
-client = OpenAI(api_key=openai_key)
-model = ChatOpenAI(api_key=openai_key, model=llm_name)
-
+model = ChatOpenAI(api_key=openai_key, model=llm)
 
 # STEP 1: Build a Basic Chatbot
 from langgraph.graph.message import add_messages
+# add_messages specifies how this should be updated when the state changes
 
-
+# Define the state of the agent
 class State(TypedDict):
     # Messages have the type "list". The `add_messages` function
     # in the annotation defines how this state key should be updated
     # (in this case, it appends messages to the list, rather than overwriting them)
-    messages: Annotated[list, add_messages]
+    messages: Annotated[list, add_messages] # Annotated allows to add metadata
 
-
+# STEP 2: build the first node for the graph
 def bot(state: State):
-    # print(state.items())
+    # The bot function is the first node in the graph. It takes the state as input
+    # and returns a response based on the messages in the state.
     print(state["messages"])
     return {"messages": [model.invoke(state["messages"])]}
-
 
 graph_builder = StateGraph(State)
 
@@ -44,25 +40,32 @@ graph_builder = StateGraph(State)
 # the node is used.
 graph_builder.add_node("bot", bot)
 
+# Step 3: add an entry point and end to the graph
+graph_builder.set_entry_point("bot")  # it could be any node
 
-# STEP 3: Add an entry point to the graph
-graph_builder.set_entry_point("bot")
-
-# STEP 4: and end point to the graph
 graph_builder.set_finish_point("bot")
 
-
-# STEP 5: Compile the graph
+# Step 5: Compile the graph
 graph = graph_builder.compile()
 
 # res = graph.invoke({"messages": ["Hello, how are you?"]})
-# print(res["messages"])
+# print(res)
 
+# Step 6: Stream the graph
 while True:
-    user_input = input("User: ")
-    if user_input.lower() in ["quit", "exit", "q"]:
-        print("Goodbye!")
+    # Get user input
+    user_input = input("You: ")
+
+    # Check if the user wants to exit
+    if user_input.lower() in ["exit", "quit", "q"]:
+        print("Exiting the chat.")
         break
+
+    # Invoke the graph with the user input
+    # The .stream() method returns an iterable of events
+    # each "event" is a dictionary with the node name as the key; represent a step in the graph
     for event in graph.stream({"messages": ("user", user_input)}):
         for value in event.values():
             print("Assistant:", value["messages"][-1].content)
+
+
