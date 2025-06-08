@@ -80,46 +80,46 @@ graph_builder.set_entry_point("bot")
 # ADD MEMORY NODE
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-memory = SqliteSaver.from_conn_string(":memory:")
+with SqliteSaver.from_conn_string(":memory:") as memory:
+    
+    # STEP 5: Compile the graph
+    graph = graph_builder.compile(
+        checkpointer=memory,
+        interrupt_before=["tools"],
+    )
+    # MEMORY CODE CONTINUES ===
+    # Now we can run the chatbot and see how it behaves
+    # PICK A TRHEAD FIRST
+    config = {
+        "configurable": {"thread_id": 1}
+    }  # a thread where the agent will dump its memory to
+    user_input = "I'm learning about astrology. Could you do some research on it for me?"
 
-# STEP 5: Compile the graph
-graph = graph_builder.compile(
-    checkpointer=memory,
-    interrupt_before=["tools"],
-)
-# MEMORY CODE CONTINUES ===
-# Now we can run the chatbot and see how it behaves
-# PICK A TRHEAD FIRST
-config = {
-    "configurable": {"thread_id": 1}
-}  # a thread where the agent will dump its memory to
-user_input = "I'm learning about astrology. Could you do some research on it for me?"
-
-# The config is the **second positional argument** to stream() or invoke()!
-events = graph.stream(
-    {"messages": [("user", user_input)]}, config, stream_mode="values"
-)
-for event in events:
-    event["messages"][-1].pretty_print()
-
-# inspect the state
-snapshot = graph.get_state(config)
-next_step = snapshot.next
-# this will show "action", because we've interrupted the flow before the tools node
-
-print(
-    "===>>>", next_step
-)  # this will show "action", because we've interrupted the flow before the tools node
-
-
-existing_message = snapshot.values["messages"][-1]
-all_tools = existing_message.tool_calls
-
-print("tools to be called::", all_tools)
-
-# Continue the conversation passing None to say continue - all is good
-# `None` will append nothing new to the current state, letting it resume as if it had never been interrupted
-events = graph.stream(None, config, stream_mode="values")
-for event in events:
-    if "messages" in event:
+    # The config is the **second positional argument** to stream() or invoke()!
+    events = graph.stream(
+        {"messages": [("user", user_input)]}, config, stream_mode="values"
+    )
+    for event in events:
         event["messages"][-1].pretty_print()
+
+    # inspect the state
+    snapshot = graph.get_state(config)
+    next_step = snapshot.next
+    # this will show "action", because we've interrupted the flow before the tools node
+
+    print(
+        "===>>>", next_step
+    )  # this will show "action", because we've interrupted the flow before the tools node
+
+
+    existing_message = snapshot.values["messages"][-1]
+    all_tools = existing_message.tool_calls
+
+    print("tools to be called::", all_tools)
+
+    # Continue the conversation passing None to say continue - all is good
+    # `None` will append nothing new to the current state, letting it resume as if it had never been interrupted
+    events = graph.stream(None, config, stream_mode="values")
+    for event in events:
+        if "messages" in event:
+            event["messages"][-1].pretty_print()
