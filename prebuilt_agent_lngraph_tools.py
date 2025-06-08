@@ -105,6 +105,20 @@ with SqliteSaver.from_conn_string(":memory:") as memory:
     for event in events:
         event["messages"][-1].pretty_print()  # Print the last message in the event
 
+    user_input = "do you remember my name, and how long have I been happy for?"
+
+    # The config is the **second positional argument** to stream() or invoke()!
+    events = graph.stream(
+        {"messages": [("user", user_input)]}, config, stream_mode="values"
+    )
+
+    for event in events:
+        event["messages"][-1].pretty_print()
+
+
+    snapshot = graph.get_state(config)
+    print("Snapshot:\n", snapshot)
+
 # res = graph.invoke({"messages": ["Hello, how are you?"]})
 # print(res)
 
